@@ -1,0 +1,36 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# EKS overlay. `kubectl kustomize` here builds base plus the EKS-specific concerns below;
+# scripts/deploy.sh renders this overlay and runs `kustomize edit set image` for each service
+# just before `kubectl apply -k`, so the manifests point at your pushed ECR images.
+#
+# Stretch (M6) resources are added here when you reach that milestone:
+#   - ingress.yaml            (ALB Ingress for a real DNS hostname)
+#   - keda-scaledobject.yaml  (scale order-worker by orderforge:ready depth, scale-to-zero)
+#   - grafana.yaml / loki.yaml
+namespace: orderforge
+
+resources:
+  - ../../base
+
+# Pin every pod to arm64/Graviton nodes. This overlay assumes an arm64 node pool AND arm64-built images
+# (`NODE_ARCH=arm64 make push`, or a Graviton cluster where `make push` auto-detects arm64). The images are
+# single-arch, so a pod scheduled onto a node of the other architecture fails to start with "no match for
+# platform"; on a mixed-arch cluster this nodeSelector keeps pods on nodes that can run them.
+# Set the value to amd64 (or remove this patch) if you built amd64 images or run a single-arch amd64 cluster.
+patches:
+  - target:
+      kind: Deployment
+    patch: |-
+      - op: add
+        path: /spec/template/spec/nodeSelector
+        value:
+          kubernetes.io/arch: arm64
+  - target:
+      kind: StatefulSet
+    patch: |-
+      - op: add
+        path: /spec/template/spec/nodeSelector
+        value:
+          kubernetes.io/arch: arm64

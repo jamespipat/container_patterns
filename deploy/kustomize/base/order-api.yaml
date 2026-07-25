@@ -1,0 +1,185 @@
+# The single-pod trio: order-api (main) + 3 NATIVE sidecars sharing the pod.
+#   log-shipper   [SIDECAR]    - reads shared /var/log/app volume, ships to log-sink
+#   metrics-adapter [ADAPTER]  - scrapes localhost:9000 native stats, exposes :9102 Prometheus
+#   cache-ambassador [AMBASSADOR] - localhost:6380 cache API, shards to cache-shard-0/1/2
+# Native sidecars (initContainers + restartPolicy:Always) => ordered startup (ambassador ready before main)
+# and ordered shutdown (main SIGTERM'd first; shipper/ambassador drain after). See CONTRACTS.md 4,5,6,10.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-api
+  namespace: orderforge
+  labels:
+    app: order-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: order-api
+  template:
+    metadata:
+      labels:
+        app: order-api
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9102"
+        prometheus.io/path: "/metrics"
+    spec:
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+      volumes:
+        - name: app-logs
+          emptyDir:
+            sizeLimit: 256Mi
+        - name: shipper-state
+          emptyDir:
+            sizeLimit: 16Mi
+      # ---- native sidecars: start (in order) BEFORE main; stop AFTER main ----
+      initContainers:
+        - name: cache-ambassador  # AMBASSADOR (Go)
+          image: orderforge/cache-ambassador:latest
+          restartPolicy: Always
+          env:
+            # Bind all interfaces so the tcpSocket startup probe (which dials the pod IP, not loopback)
+            # can reach it. order-api still connects via 127.0.0.1:6380, so the app stays localhost-only.
+            - name: LISTEN_ADDR
+              value: "0.0.0.0:6380"
+            - name: SHARDS
+              value: "cache-shard-0.cache-shards:6379,cache-shard-1.cache-shards:6379,cache-shard-2.cache-shards:6379"
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - "ALL"
+          startupProbe:
+            tcpSocket:
+              port: 6380
+            periodSeconds: 1
+            failureThreshold: 30
+        # ADAPTER (Python) - liveness only, never gate readiness on upstream
+        - name: metrics-adapter
+          image: orderforge/metrics-adapter:latest
+          restartPolicy: Always
+          env:
+            - name: NATIVE_STATS_URL
+              value: "http://127.0.0.1:9000/stats"
+          ports:
+            - name: metrics
+              containerPort: 9102
+          resources:
+            requests:
+              cpu: 25m
+              memory: 48Mi
+            limits:
+              memory: 96Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - "ALL"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 9102
+            periodSeconds: 15
+        - name: log-shipper  # SIDECAR (Node)
+          image: orderforge/log-shipper:latest
+          restartPolicy: Always
+          env:
+            - name: LOG_DIR
+              value: "/var/log/app"
+            - name: SINK_URL
+              value: "http://log-sink:3100/loki/api/v1/push"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          volumeMounts:
+            - name: app-logs
+              mountPath: /var/log/app
+              readOnly: true
+            - name: shipper-state
+              mountPath: /var/lib/shipper
+          resources:
+            requests:
+              cpu: 25m
+              memory: 48Mi
+            limits:
+              memory: 96Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - "ALL"
+      # ---- main app ----
+      containers:
+        - name: order-api  # MAIN (Go)
+          image: orderforge/order-api:latest
+          env:
+            - name: HTTP_ADDR
+              value: ":8080"
+            - name: STATS_ADDR
+              value: "127.0.0.1:9000"  # native metrics, internal only - NOT in Service
+            - name: CACHE_ADDR
+              value: "127.0.0.1:6380"  # oblivious to sharding (the ambassador)
+            - name: LOG_DIR
+              value: "/var/log/app"
+            - name: INVENTORY_ROOT_URL
+              value: "http://inventory-root:8080"
+            - name: COORDINATOR_URL
+              value: "http://workqueue-coordinator:8080"
+          # 9000 intentionally NOT declared/exposed
+          ports:
+            - name: http
+              containerPort: 8080
+          volumeMounts:
+            - name: app-logs
+              mountPath: /var/log/app  # read-write
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 192Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - "ALL"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-api
+  namespace: orderforge
+  labels:
+    app: order-api
+spec:
+  selector:
+    app: order-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+    - name: metrics
+      port: 9102
+      targetPort: 9102  # adapter's normalized metrics

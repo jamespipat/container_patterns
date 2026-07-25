@@ -1,0 +1,13 @@
+{
+  "name": "log-shipper",
+  "version": "1.0.0",
+  "description": "OrderForge sidecar: tails JSONL log files and ships them to log-sink in Loki push format (at-least-once).",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node index.js"
+  }
+}

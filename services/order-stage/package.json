@@ -1,0 +1,14 @@
+{
+  "name": "order-stage",
+  "version": "1.0.0",
+  "private": true,
+  "description": "OrderForge work-queue user stage: file-in/file-out order pricing (shim + stage)",
+  "main": "shim.js",
+  "scripts": {
+    "start": "node shim.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT"
+}

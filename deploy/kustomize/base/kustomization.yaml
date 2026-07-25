@@ -1,0 +1,53 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Base = portable, vanilla Kubernetes (runs on any conformant cluster, v1.29+ for native sidecars): all six
+# patterns provable, fixed replicas, log-sink + bare Prometheus, port-forward delivery. The overlays/eks
+# overlay adds the AWS-specific layer (ECR image refs, arm64 nodeSelector, stretch infra).
+namespace: orderforge
+
+resources:
+  - namespace.yaml
+  - redis.yaml
+  - cache-shards.yaml
+  - order-api.yaml  # SIDECAR + ADAPTER + AMBASSADOR (single-pod trio)
+  - inventory.yaml  # SCATTER/GATHER
+  - workqueue.yaml  # WORK QUEUE
+  - settlement-rbac.yaml  # LEADER ELECTION rbac
+  - settlement.yaml  # LEADER ELECTION
+  - observability.yaml  # log-sink + prometheus
+
+commonLabels:
+  app.kubernetes.io/part-of: orderforge
+
+# Local/base image names (what `make build` produces). Point these at your registry here, or let the
+# overlays/eks overlay rewrite them to ECR, via `images:`.
+images:
+  - name: orderforge/order-api
+    newTag: latest
+  - name: orderforge/log-shipper
+    newTag: latest
+  - name: orderforge/metrics-adapter
+    newTag: latest
+  - name: orderforge/cache-ambassador
+    newTag: latest
+  - name: orderforge/leader-elector
+    newTag: latest
+  - name: orderforge/settlement
+    newTag: latest
+  - name: orderforge/inventory-root
+    newTag: latest
+  - name: orderforge/warehouse-leaf-py
+    newTag: latest
+  - name: orderforge/warehouse-leaf-node
+    newTag: latest
+  - name: orderforge/inventory-merge
+    newTag: latest
+  - name: orderforge/workqueue-coordinator
+    newTag: latest
+  - name: orderforge/workqueue-framework
+    newTag: latest
+  - name: orderforge/order-stage
+    newTag: latest
+  - name: orderforge/log-sink
+    newTag: latest

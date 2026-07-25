@@ -1,0 +1,72 @@
+%% OrderForge - the whole system, colored by language.
+%% Go = infra/hot-path, Python = business/normalizers, Node = glue/user stages.
+flowchart TB
+    client([client / curl / port-forward]):::ext
+
+    subgraph apipod["order-api pod (single-pod trio)"]
+        direction TB
+        api["order-api<br/>(Go, main)"]:::go
+        amb["cache-ambassador<br/>(Go sidecar) :6380"]:::go
+        adp["metrics-adapter<br/>(Py sidecar) :9102"]:::py
+        ship["log-shipper<br/>(Node sidecar)"]:::node
+        api -. "localhost:9000 native stats" .-> adp
+        api -. "localhost:6380 RESP" .-> amb
+        api -. "shared emptyDir /var/log/app" .-> ship
+    end
+
+    subgraph cache["cache tier (StatefulSet)"]
+        cs0[(cache-shard-0)]:::infra
+        cs1[(cache-shard-1)]:::infra
+        cs2[(cache-shard-2)]:::infra
+    end
+
+    subgraph sg["scatter / gather"]
+        root["inventory-root<br/>(Go)"]:::go
+        leafpy["warehouse-leaf-py<br/>(Py, us-east)"]:::py
+        leafnode["warehouse-leaf-node<br/>(Node, us-west)"]:::node
+        merge["inventory-merge<br/>(Py)"]:::py
+        root -->|"POST same body, concurrent"| leafpy
+        root -->|"POST same body, concurrent"| leafnode
+        root -->|"POST partials"| merge
+    end
+
+    subgraph wq["work queue"]
+        coord["workqueue-coordinator<br/>(Go) + reaper"]:::go
+        rq[(redis-workqueue)]:::infra
+        subgraph worker["order-worker pod"]
+            fw["framework<br/>(Go, generic)"]:::go
+            stage["order-stage<br/>(Node, user logic)"]:::node
+            fw -. "files on emptyDir /work" .-> stage
+        end
+        coord -->|"HSET task / RPUSH ready"| rq
+        fw <-->|"BLMOVE claim / SADD done / settle:pending"| rq
+    end
+
+    subgraph settle["settlement (3 replicas, leader-elected)"]
+        s1["settlement<br/>(Py)"]:::py
+        elector["leader-elector<br/>(Go sidecar) :4040"]:::go
+        lease{{"Lease<br/>coordination.k8s.io"}}:::k8s
+        elector -->|"acquire / renew"| lease
+        s1 -. "localhost:4040 /leader (fail-closed)" .-> elector
+    end
+
+    subgraph obs["observability"]
+        sink["log-sink<br/>(Go, Loki stand-in)"]:::go
+        prom["prometheus"]:::infra
+    end
+
+    client -->|"POST /orders"| api
+    amb -->|"crc32(key) mod 3"| cs0 & cs1 & cs2
+    ship -->|"push JSONL"| sink
+    prom -->|"scrape :9102"| adp
+    api -->|"POST /availability"| root
+    api -->|"POST /enqueue"| coord
+    fw -->|"SADD settle:pending"| rq
+    s1 -->|"finalize order:<id>"| rq
+
+    classDef go fill:#00add8,stroke:#007d9c,color:#012b36;
+    classDef py fill:#ffd23f,stroke:#d6a400,color:#3b2f00;
+    classDef node fill:#8cc84b,stroke:#5a8a2a,color:#152b06;
+    classDef infra fill:#c9d1d9,stroke:#8b949e,color:#161b22;
+    classDef k8s fill:#e6c3ff,stroke:#a371d6,color:#2a1140;
+    classDef ext fill:#ffffff,stroke:#8b949e,color:#161b22;

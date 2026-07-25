@@ -1,0 +1,3 @@
+# metrics-adapter uses only the Python 3.12 standard library
+# (http.server, urllib, json). No third-party dependencies by design,
+# which keeps the image slim. This file is intentionally empty of pins.

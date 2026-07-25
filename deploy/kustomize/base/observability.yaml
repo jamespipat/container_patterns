@@ -1,0 +1,150 @@
+# Minimal-core observability: log-sink (central logging target for the SIDECAR) + bare Prometheus scraping
+# the ADAPTER's normalized metrics via a STATIC config (no kube RBAC needed). Loki + Grafana are the M6
+# overlay. See CONTRACTS.md section 10.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: log-sink
+  namespace: orderforge
+  labels:
+    app: log-sink
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: log-sink
+  template:
+    metadata:
+      labels:
+        app: log-sink
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+      containers:
+        - name: log-sink
+          image: orderforge/log-sink:latest
+          ports:
+            - name: http
+              containerPort: 3100
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - "ALL"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 3100
+            periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: log-sink
+  namespace: orderforge
+  labels:
+    app: log-sink
+spec:
+  selector:
+    app: log-sink
+  ports:
+    - name: http
+      port: 3100
+      targetPort: 3100
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: orderforge
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+    scrape_configs:
+      # Scrape the metrics-ADAPTER's normalized output (proves the adapter bridged the Go app's native format).
+      - job_name: order-api-adapter
+        metrics_path: /metrics
+        static_configs:
+          - targets: ["order-api:9102"]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: orderforge
+  labels:
+    app: prometheus
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus-config
+        - name: data
+          emptyDir: {}
+      containers:
+        - name: prometheus
+          image: quay.io/prometheus/prometheus:v2.54.1
+          args:
+            - "--config.file=/etc/prometheus/prometheus.yml"
+            - "--storage.tsdb.path=/prometheus"
+          ports:
+            - name: http
+              containerPort: 9090
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+            - name: data
+              mountPath: /prometheus
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - "ALL"
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: 9090
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: orderforge
+  labels:
+    app: prometheus
+spec:
+  selector:
+    app: prometheus
+  ports:
+    - name: http
+      port: 9090
+      targetPort: 9090

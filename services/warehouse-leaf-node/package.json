@@ -1,0 +1,14 @@
+{
+  "name": "warehouse-leaf-node",
+  "version": "1.0.0",
+  "description": "OrderForge scatter/gather leaf (Node) - answers /shard/availability for its shard's static stock map",
+  "private": true,
+  "type": "commonjs",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

@@ -1,0 +1,50 @@
+%% One order's journey through all six patterns.
+sequenceDiagram
+    autonumber
+    actor C as Client
+    participant API as order-api (Go)
+    participant AMB as cache-ambassador (Go)
+    participant SH as cache-shards (redis x3)
+    participant ADP as metrics-adapter (Py)
+    participant LOG as log-shipper → sink
+    participant ROOT as inventory-root (Go)
+    participant LP as leaf-py (us-east)
+    participant LN as leaf-node (us-west)
+    participant MRG as inventory-merge (Py)
+    participant CO as coordinator (Go)
+    participant WF as worker: framework+stage
+    participant SET as settlement (leader)
+
+    C->>API: POST /orders
+    Note over API,LOG: SIDECAR + ADAPTER run passively on every request
+    API->>AMB: GET cart:cust (localhost:6380)
+    AMB->>SH: routed to one shard by crc32
+    API-->>ADP: native stats on :9000 (scraped, normalized to :9102)
+    API-->>LOG: append JSONL to shared volume (shipped centrally)
+
+    rect rgb(245,245,255)
+    Note over API,MRG: SCATTER / GATHER - fan out, gather one verdict
+    API->>ROOT: POST /availability
+    par concurrent, siblings not cancelled
+        ROOT->>LP: /shard/availability
+    and
+        ROOT->>LN: /shard/availability
+    end
+    ROOT->>MRG: POST partials
+    MRG-->>API: {fulfillable, partial, allocation}
+    end
+
+    rect rgb(245,255,245)
+    Note over API,WF: WORK QUEUE - durable handoff, file-in/file-out stage
+    API->>CO: POST /enqueue {order_id,...}
+    CO-->>API: {task_id}
+    API-->>C: 201 {order_id, task_id, availability}
+    CO->>WF: RPUSH ready
+    WF->>WF: BLMOVE claim, write in/order.json, stage writes out/result.json, ack
+    WF->>SET: SADD settle:pending order_id
+    end
+
+    rect rgb(255,250,240)
+    Note over SET: LEADER ELECTION - only the elected replica finalizes
+    SET->>SET: finalize order:id (idempotent, once)
+    end

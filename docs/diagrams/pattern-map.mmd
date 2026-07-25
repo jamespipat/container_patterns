@@ -1,0 +1,13 @@
+%% Six-row cheat sheet: pattern -> where it lives -> containers (language).
+flowchart LR
+    subgraph L["Six patterns, one order pipeline"]
+        direction TB
+        p1["1 · SIDECAR<br/>app logs to a shared volume; a companion ships them<br/>order-api (Go) + log-shipper (Node)"]:::row
+        p2["2 · ADAPTER<br/>scrappy native JSON stats -> standard Prometheus<br/>order-api (Go) + metrics-adapter (Py)"]:::row
+        p3["3 · AMBASSADOR<br/>app talks to localhost; proxy shards to 3 caches<br/>order-api (Go) + cache-ambassador (Go)"]:::row
+        p4["4 · LEADER ELECTION<br/>3 settlement replicas, only the leader finalizes<br/>settlement (Py) + leader-elector (Go)"]:::row
+        p5["5 · WORK QUEUE<br/>reusable framework + swappable user stage<br/>framework (Go) + order-stage (Node)"]:::row
+        p6["6 · SCATTER / GATHER<br/>fan out to warehouse leaves, merge one verdict<br/>root (Go) + leaf-py + leaf-node + merge (Py)"]:::row
+        p1 --> p2 --> p3 --> p4 --> p5 --> p6
+    end
+    classDef row fill:#0d1117,stroke:#30363d,color:#e6edf3,text-align:left;

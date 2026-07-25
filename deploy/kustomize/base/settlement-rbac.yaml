@@ -1,0 +1,40 @@
+# LEADER ELECTION RBAC: the elector sidecar authenticates to the API server with this ServiceAccount and
+# needs Lease verbs. A MISSING verb makes the pod never lead and never log why (CONTRACTS.md section 7).
+# No cloud IAM (IRSA / Workload Identity) needed - the election talks only to the kube API.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: settlement
+  namespace: orderforge
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: settlement-leader-election
+  namespace: orderforge
+rules:
+  - apiGroups:
+      - "coordination.k8s.io"
+    resources:
+      - "leases"
+    verbs:
+      - "get"
+      - "list"
+      - "watch"
+      - "create"
+      - "update"
+      - "patch"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: settlement-leader-election
+  namespace: orderforge
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: settlement-leader-election
+subjects:
+  - kind: ServiceAccount
+    name: settlement
+    namespace: orderforge

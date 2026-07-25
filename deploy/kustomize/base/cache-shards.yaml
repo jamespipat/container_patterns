@@ -1,0 +1,69 @@
+# cache-shard StatefulSet + headless Service = the AMBASSADOR pattern's remote shard backends.
+# Stable DNS cache-shard-0/1/2.cache-shards.orderforge.svc.cluster.local:6379 (CONTRACTS.md section 1).
+# Change SHARD_COUNT: set replicas here AND the SHARDS env on cache-ambassador (order-api.yaml) together.
+apiVersion: v1
+kind: Service
+metadata:
+  name: cache-shards
+  namespace: orderforge
+  labels:
+    app: cache-shard
+spec:
+  clusterIP: None  # headless -> per-pod stable DNS
+  selector:
+    app: cache-shard
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: cache-shard
+  namespace: orderforge
+  labels:
+    app: cache-shard
+spec:
+  serviceName: cache-shards
+  replicas: 3  # == SHARD_COUNT
+  selector:
+    matchLabels:
+      app: cache-shard
+  template:
+    metadata:
+      labels:
+        app: cache-shard
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        fsGroup: 999
+      containers:
+        - name: redis
+          image: public.ecr.aws/docker/library/redis:7-alpine
+          args:
+            - "--save"
+            - ""
+            - "--appendonly"
+            - "no"
+          ports:
+            - name: redis
+              containerPort: 6379
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - "ALL"
+          readinessProbe:
+            exec:
+              command:
+                - "redis-cli"
+                - "ping"
+            periodSeconds: 5

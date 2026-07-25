@@ -1,0 +1,97 @@
+# LEADER ELECTION: settlement runs 3 replicas but only the ONE holding the coordination.k8s.io Lease
+# finalizes orders. Each pod = settlement (Python) + leader-elector (Go, native sidecar). The app asks its
+# sidecar over localhost:4040 "am I leader?" and fails CLOSED on any doubt (CONTRACTS.md section 7).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: settlement
+  namespace: orderforge
+  labels:
+    app: settlement
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: settlement
+  template:
+    metadata:
+      labels:
+        app: settlement
+    spec:
+      serviceAccountName: settlement
+      terminationGracePeriodSeconds: 20
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+      # spread replicas across nodes so "election containers talk across nodes" is literally true
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: settlement
+      # elector as a NATIVE sidecar: up before the app polls, down after
+      initContainers:
+        - name: leader-elector
+          image: orderforge/leader-elector:latest
+          restartPolicy: Always
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          ports:
+            - name: leader
+              containerPort: 4040
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - "ALL"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 4040
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      containers:
+        - name: settlement
+          image: orderforge/settlement:latest
+          env:
+            - name: LEADER_URL
+              value: "http://127.0.0.1:4040/leader"
+            - name: REDIS_ADDR
+              value: "redis-workqueue:6379"
+            - name: SWEEP_INTERVAL_S
+              value: "3"
+          ports:
+            - name: health
+              containerPort: 8090
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - "ALL"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8090
+            periodSeconds: 5
